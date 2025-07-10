@@ -1,0 +1,16 @@
+{
+  "name": "email-service",
+  "version": "1.0.0",
+  "type": "commonjs",   
+  "main": "emailService.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "node test/emailService.test.js"
+  },
+  "keywords": ["email", "service", "vercel", "mock", "nodejs"],
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}
