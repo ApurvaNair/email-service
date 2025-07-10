@@ -1,25 +1,27 @@
 const ProviderOne = require("./emailProviders/providerOne.js");
 const ProviderTwo = require("./emailProviders/providerTwo.js");
-
 const wait = require("./utils/wait.js");
 const Tracker = require("./utils/tracker.js");
-
-const { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } = require("fs");
+const fs = require("fs");
+const { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } = fs;
 const { join, dirname } = require("path");
 
-// CircuitBreaker 
+// Check if we're running on Vercel (no file writing allowed)
+const isVercel = !!process.env.VERCEL;
+
+// Circuit breaker to avoid using broken providers
 class CircuitBreaker {
   constructor(limit = 3, cooldown = 30000) {
     this.failures = 0;
-    this.limit = limit; // fail limit
-    this.cooldown = cooldown; // wait before retrying
+    this.limit = limit;
+    this.cooldown = cooldown;
     this.lastFailureTime = null;
   }
 
   canAttempt() {
     if (this.failures < this.limit) return true;
     if (Date.now() - this.lastFailureTime > this.cooldown) {
-      this.reset(); // cooldown over
+      this.reset();
       return true;
     }
     return false;
@@ -36,67 +38,56 @@ class CircuitBreaker {
   }
 }
 
-// The Main Event
 class EmailService {
   constructor() {
-    // If one fails, we try the other!
     this.providers = [new ProviderOne(), new ProviderTwo()];
-
-    // Memory for rate limits and sent emails (idempotency)
-    this.tracker = new Tracker(5); 
-    this.signature = "\n\nRegards,\nTeam PearlThoughts"; 
-
-    // Log files to trace all email activity and delivery outcomes
+    this.tracker = new Tracker(5); // Allow max 5 emails per minute
+    this.signature = "\n\nRegards,\nTeam PearlThoughts";
     this.logPath = join(__dirname, "logs", "activity.txt");
     this.historyPath = join(__dirname, "logs", "sendHistory.json");
-
-    this.queue = []; // Email queue 
-    this.breakers = new Map(); // Each provider has its own circuit breaker
-
-    this.setupLogs(); // Make sure logs exist before we write
+    this.queue = [];
+    this.breakers = new Map();
+    this.setupLogs();
   }
 
-  // Create logs folder and files if they don’t exist
   setupLogs() {
+    if (isVercel) return; // Skip file setup on Vercel
+
     const logDir = dirname(this.logPath);
     if (!existsSync(logDir)) mkdirSync(logDir);
     if (!existsSync(this.historyPath)) writeFileSync(this.historyPath, "[]");
-    writeFileSync(this.logPath, "📋 Email Activity Log\n\n", { flag: "w" });
+    writeFileSync(this.logPath, "Email Activity Log\n\n", { flag: "w" });
   }
 
-  // Place email in queue and start sending if not already sending
   async enqueueEmail(email) {
-    this.queue.push(email);
+    this.queue.push(email); // Add to queue
     this.log(`Email [${email.id}] added to queue.`);
-    if (this.queue.length === 1) await this.processQueue();
+    if (this.queue.length === 1) await this.processQueue(); // Process immediately if it's the only email
   }
 
-  // Process each email one-by-one
   async processQueue() {
     while (this.queue.length > 0) {
       const email = this.queue[0];
       await this.sendEmail(email);
-      this.queue.shift(); // remove after sending
+      this.queue.shift(); // Remove email from queue
     }
   }
 
-  // The main dispatcher function
   async sendEmail(email) {
-    email.body += this.signature; // Add professional signature
+    email.body += this.signature;
 
-    // Skip if already sent
+    // Prevent duplicate sends
     if (this.tracker.alreadySent(email.id)) {
       this.log(`Duplicate detected. Email [${email.id}] already sent.`);
       return;
     }
 
-    // Respect rate limits
+    // Check rate limit
     if (!this.tracker.canSend()) {
       this.log("Rate limit exceeded. Email dispatch postponed.");
       return;
     }
 
-    // Try each provider until one succeeds
     for (let provider of this.providers) {
       if (!this.breakers.has(provider.name)) {
         this.breakers.set(provider.name, new CircuitBreaker());
@@ -112,15 +103,13 @@ class EmailService {
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           this.log(`Attempt ${attempt} via ${provider.name}.`);
-          await this.countdown(3); // Visual countdown
-          await wait(300 * attempt); // Wait before retry
-          await provider.send(email); // Try sending
-
-          // Success
-          this.tracker.remember(email.id);
+          await this.countdown(3); // Optional delay before retry
+          await wait(300 * attempt); // Exponential backoff
+          await provider.send(email); // Simulated send
+          this.tracker.remember(email.id); // Track sent email
           this.log(`Email [${email.id}] sent via ${provider.name}.`);
           this.saveToHistory(email, provider.name, "SENT");
-          breaker.reset();
+          breaker.reset(); // Reset breaker on success
           return;
         } catch (err) {
           this.log(`Attempt ${attempt} failed with ${provider.name}: ${err.message}`);
@@ -128,16 +117,14 @@ class EmailService {
         }
       }
 
-      // Move to next provider
       this.log(`Switching from ${provider.name} to next provider.`);
     }
 
-    // All providers failed
+    // If all providers failed
     this.log(`All providers failed to deliver email [${email.id}].`);
     this.saveToHistory(email, "None", "FAILED");
   }
 
-  // Show countdown before retry
   async countdown(seconds) {
     for (let i = seconds; i > 0; i--) {
       process.stdout.write(`Retrying in ${i}...\r`);
@@ -146,8 +133,9 @@ class EmailService {
     process.stdout.write("\n");
   }
 
-  // Store delivery status in history file
   saveToHistory(email, provider, status) {
+    if (isVercel) return; // Skip history writing on Vercel
+
     const history = JSON.parse(readFileSync(this.historyPath));
     history.push({
       id: email.id,
@@ -160,11 +148,13 @@ class EmailService {
     writeFileSync(this.historyPath, JSON.stringify(history, null, 2));
   }
 
-  // Simple logger for debugging and understanding flow
   log(message) {
     const entry = `[${new Date().toLocaleString()}] ${message}\n`;
     console.log(entry.trim());
-    appendFileSync(this.logPath, entry);
+
+    if (!isVercel) {
+      appendFileSync(this.logPath, entry);
+    }
   }
 }
 
