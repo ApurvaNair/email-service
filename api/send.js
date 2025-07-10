@@ -14,12 +14,12 @@ module.exports = async (req, res) => {
     await service.enqueueEmail(email);
 
     res.status(200).json({
-      message: "✅ Email processed (mock)",
+      message: "Email processed successfully",
       id: email.id
     });
 
   } catch (error) {
-    console.error("❌ Function crashed:", error);
+    console.error("Function crashed:", error);
     res.status(500).json({
       error: "Internal Server Error",
       reason: error.message
